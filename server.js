@@ -3,17 +3,20 @@ const axios = require("axios");
 const cors = require("cors");
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const { JSDOM } = require("jsdom");
-// const puppeteer = require("puppeteer");
-// const chromium = require("@sparticuz/chrome-aws-lambda");
-
 
 const app = express();
 app.use(cors());
 
-// 🔹 Dynamic Proxy Middleware for Multiple Sources
+// 🔹 Allowed video sources
+const allowedHosts = [
+    "vidsrc.xyz",
+    "edgedeliverynetwork.com"
+    // "vidsrc.cc"
+];
+
+// 🔹 Dynamic Proxy Middleware
 app.use("/proxy", async (req, res) => {
     const videoUrl = req.query.url;
-    // const usePuppeteer = req.query.puppeteer === "true"; // Toggle Puppeteer via query
 
     if (!videoUrl) {
         return res.status(400).json({ error: "Missing video URL" });
@@ -23,36 +26,13 @@ app.use("/proxy", async (req, res) => {
         const parsedUrl = new URL(videoUrl);
         const hostname = parsedUrl.hostname;
 
-        // console.log(`🔹 Fetching: ${videoUrl} (Puppeteer: ${usePuppeteer})`);
-
-        // Allowed video sources
-        const allowedHosts = [
-            "vidsrc.xyz",
-            // "vidsrc.cc",
-            // "player.smashy.stream",
-            "edgedeliverynetwork.com",
-        ];
-
         if (!allowedHosts.includes(hostname)) {
             return res.status(403).json({ error: "Forbidden host" });
         }
 
-        let content;
-        let isCss = videoUrl.endsWith(".css");
+        let content = await fetchAndSanitize(videoUrl);
 
-        // if (usePuppeteer) {
-        //     content = await fetchWithPuppeteer(videoUrl);
-        // } else {
-            content = await fetchWithAxios(videoUrl);
-        // }
-
-        // 🔹 Set correct MIME type
-        if (isCss) {
-            res.setHeader("Content-Type", "text/css");
-        } else {
-            res.setHeader("Content-Type", "text/html");
-        }
-
+        res.setHeader("Content-Type", "text/html");
         res.send(content);
     } catch (error) {
         console.error("Proxy Error:", error.message);
@@ -60,194 +40,82 @@ app.use("/proxy", async (req, res) => {
     }
 });
 
-
-
-// 🔹 Fetch with Axios (Handles CSS Correctly)
-async function fetchWithAxios(url) {
-    const response = await axios.get(url, {
-        headers: { "User-Agent": "Mozilla/5.0" },
-        responseType: "arraybuffer", // Preserve original file format
-    });
-
-    return response.data;
-}
-
-// 🔹 Fetch with Puppeteer (For Cloudflare Bypass)
-// async function fetchWithPuppeteer(url) {
-//     const browser = await puppeteer.launch({
-//         headless: true, // Change to false to debug
-//         args: ["--no-sandbox", "--disable-setuid-sandbox"],
-//     });
-
-//     const page = await browser.newPage();
-
-//     await page.setUserAgent(
-//         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-//     );
-
-//     await page.setExtraHTTPHeaders({
-//         Referer: "https://vidsrc.cc/",
-//         "Accept-Language": "en-US,en;q=0.9",
-//     });
-
-//     // Navigate to the main site first to bypass security checks
-//     await page.goto("https://vidsrc.cc", { waitUntil: "networkidle2" });
-
-//     // Fetch the CSS file content
-//     const cssContent = await page.evaluate(async (cssUrl) => {
-//         const response = await fetch(cssUrl);
-//         return await response.text();
-//     }, url);
-
-//     await browser.close();
-//     return cssContent;
-// }
-
-// 🔹 Fetch with Puppeteer (For Cloudflare Bypass)
-// async function fetchWithPuppeteer(url) {
-//     const browser = await puppeteer.launch({
-//         executablePath: await chromium.executablePath,
-//         headless: chromium.headless,
-//         args: chromium.args,
-//     });
-
-//     const page = await browser.newPage();
-//     await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-//     await page.goto(url, { waitUntil: "networkidle2" });
-
-//     const content = await page.content();
-//     await browser.close();
-//     return content;
-// }
-
-// 🔹 Fetch Page with Axios (Basic Request)
-async function fetchWithAxios(url) {
+// 🔹 Secure Fetch with Redirect Blocking (Keeps Video iFrames)
+async function fetchAndSanitize(url) {
     const response = await axios.get(url, {
         headers: { "User-Agent": "Mozilla/5.0" },
     });
 
     let content = response.data;
-
-    // Parse page with JSDOM
-    const dom = new JSDOM(content);
+    const dom = new JSDOM(content, { runScripts: "outside-only" });
     const { document } = dom.window;
 
-    // 🔹 Remove DevTool Blockers
+    // 🔹 Strip ALL JavaScript-Based Redirects
     document.querySelectorAll("script").forEach((script) => {
-        if (script.src?.includes("disable-devtool") ||
-            script.textContent.includes("console.clear") ||
-            script.textContent.includes("debugger") ||
-            script.textContent.includes("onkeydown") ||
-            script.textContent.includes("document.oncontextmenu") ||
-            script.textContent.includes("window.onkeydown") ||
-            script.textContent.includes("document.addEventListener('keydown'")
+        if (
+            script.textContent.match(/window\.location|document\.location|top\.location|self\.location|location\.href|setTimeout|setInterval|redirect|eval|atob/i)
         ) {
             script.remove();
         }
     });
 
-    // 🔹 Remove Inline Event Listeners That Block DevTools
-    document.body.removeAttribute("oncontextmenu");
-    document.body.removeAttribute("onkeydown");
+    // 🔹 Remove META Redirects
+    document.querySelectorAll('meta[http-equiv="refresh"]').forEach((meta) => meta.remove());
 
-    // 🔹 Keep Styles Intact
-    document.querySelectorAll("style, link[rel='stylesheet']").forEach((style) => {
-        if (!style.href?.includes("ads") && !style.innerHTML.includes("display: none")) {
-            return; // Keep useful styles
+    // 🔹 Remove ALL Redirecting Links
+    document.querySelectorAll("a[href*='ads'], a[href*='redirect'], a[href*='track'], a[href*='out'], a[href*='exit']").forEach((link) => link.remove());
+
+    // ✅ **Keep Only Video iFrames, Block Suspicious Ones**
+    document.querySelectorAll("iframe").forEach((iframe) => {
+        const src = iframe.getAttribute("src");
+        if (!src || src.includes("ads") || src.includes("redirect") || src.includes("tracker")) {
+            iframe.remove(); // 🚫 Remove Bad Iframes
+        } else if (!allowedHosts.some(host => src.includes(host))) {
+            iframe.remove(); // 🚫 Remove Non-Whitelisted Iframes
         }
-        style.remove();
     });
 
-    // 🔹 Remove Forced Redirects
-    document.querySelectorAll('meta[http-equiv="refresh"]').forEach((meta) => meta.remove());
-    document.querySelectorAll("a[href*='ads'], a[href*='redirect']").forEach((link) => link.remove());
+    // 🔹 Remove Hidden Forms That Auto-Submit
+    document.querySelectorAll("form").forEach((form) => {
+        if (form.action.includes("redirect") || form.action.includes("ads")) {
+            form.remove();
+        }
+    });
+
+    // 🔹 Remove Event-Based Redirects
+    ["onclick", "onmouseover", "onload", "onmouseenter"].forEach((event) => {
+        document.body.removeAttribute(event);
+        document.querySelectorAll("*").forEach((el) => el.removeAttribute(event));
+    });
+
+    // 🔹 Block CSS-Based Redirects (display: none, visibility: hidden, etc.)
+    document.querySelectorAll("style, link[rel='stylesheet']").forEach((style) => {
+        if (style.innerHTML.match(/display\s*:\s*none|visibility\s*:\s*hidden|position\s*:\s*absolute/i)) {
+            style.remove();
+        }
+    });
+
+    // 🔹 Block XHR/Fetch Redirects
+    document.querySelectorAll("script").forEach((script) => {
+        if (script.textContent.match(/XMLHttpRequest|fetch\(/i)) {
+            script.remove();
+        }
+    });
 
     return dom.serialize();
 }
 
-// 🔹 Fetch Page with Puppeteer (Cloudflare Bypass)
-// async function fetchWithPuppeteer(url) {
-//     const browser = await puppeteer.launch({
-//         headless: true, // Change to false to debug
-//         args: ["--no-sandbox", "--disable-setuid-sandbox"],
-//     });
-
-//     const page = await browser.newPage();
-
-//     await page.setUserAgent(
-//         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-//     );
-
-//     await page.setExtraHTTPHeaders({
-//         Referer: "https://vidsrc.cc/",
-//         "Accept-Language": "en-US,en;q=0.9",
-//     });
-
-//     await page.goto(url, { waitUntil: "networkidle2" });
-
-//     // 🔹 Remove DevTool Blockers Before Extracting HTML
-//     await page.evaluate(() => {
-//         document.querySelectorAll("script").forEach((script) => {
-//             if (script.src.includes("disable-devtool") || script.textContent.includes("debugger")) {
-//                 script.remove();
-//             }
-//         });
-
-//         // Remove inline blocking events
-//         document.body.removeAttribute("oncontextmenu");
-//         document.body.removeAttribute("onkeydown");
-//     });
-
-//     // Extract cleaned HTML content
-//     const content = await page.content();
-//     await browser.close();
-//     return content;
-// }
-
-// async function extractVideoUrl(url) {
-//     const browser = await puppeteer.launch({
-//         headless: true,
-//         args: ["--no-sandbox", "--disable-setuid-sandbox"],
-//     });
-
-//     const page = await browser.newPage();
-
-//     await page.setUserAgent(
-//         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-//     );
-
-//     await page.goto(url, { waitUntil: "domcontentloaded" });
-
-//     // Try extracting from <video> or <source>
-//     let videoSrc = await page.evaluate(() => {
-//         return document.querySelector("video source")?.src || document.querySelector("video")?.src || null;
-//     });
-
-//     // If not found, check network requests
-//     if (!videoSrc) {
-//         page.on("response", async (response) => {
-//             const url = response.url();
-//             if (url.includes(".mp4") || url.includes(".m3u8")) {
-//                 console.log("🎥 Video Found:", url);
-//                 videoSrc = url;
-//             }
-//         });
-
-//         await page.waitForTimeout(5000); // Give time for network requests
-//     }
-
-//     await browser.close();
-
-//     if (!videoSrc) {
-//         throw new Error("❌ Video URL not found");
-//     }
-
-//     console.log(`🎥 Extracted Video URL: ${videoSrc}`);
-//     return videoSrc;
-// }
-
-// extractVideoUrl()
-
+// 🔹 Proxy Middleware for Static Content
+// app.use(
+//     "/static",
+//     createProxyMiddleware({
+//         target: "https://vidsrc.cc",
+//         changeOrigin: true,
+//         onProxyReq: (proxyReq, req, res) => {
+//             console.log(`Proxying request: ${req.url}`);
+//         }
+//     })
+// );
 
 // Start server (Only for local testing)
 if (process.env.NODE_ENV !== "production") {
