@@ -57,20 +57,26 @@ async function fetchAndSanitize(url) {
 
     // 🔹 Resize Video Frames
     document.querySelectorAll("iframe").forEach((iframe) => {
-        const src = iframe.getAttribute("src");
-
+        let src = iframe.getAttribute("src");
+    
         if (!src || src.includes("ads") || src.includes("redirect") || src.includes("tracker")) {
             iframe.remove(); // 🚫 Remove Bad Iframes
         } else if (!allowedHosts.some(host => src.includes(host))) {
             iframe.remove(); // 🚫 Remove Non-Whitelisted Iframes
         } else {
+            // ✅ Append autoplay parameter
+            const autoplaySrc = src.includes("?") ? `${src}&autoplay=1` : `${src}?autoplay=1`;
+            iframe.setAttribute("src", autoplaySrc);
+    
             // ✅ Resize Allowed Iframes
             iframe.setAttribute("width", "100%");
-            iframe.setAttribute("height", "600px");
+            iframe.setAttribute("height", "300px");
+            iframe.setAttribute("padding", "0");
             iframe.setAttribute("style", "border:none;");
+            iframe.setAttribute("allow", "autoplay; encrypted-media; fullscreen"); // Allow autoplay
         }
     });
-
+    
     // 🔹 Remove JavaScript Redirects
     document.querySelectorAll("script").forEach((script) => {
         if (

@@ -11,9 +11,10 @@
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "http-proxy-middleware": "^3.0.3",
-    "jsdom": "^26.0.0"
+    "jsdom": "^26.0.0",
+    "saxes": "^6.0.0",
+    "xmlchars": "^2.2.0"
   },
-  "devDependencies": {},
   "main": "server.js",
   "license": "ISC"
 }
