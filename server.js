@@ -1,15 +1,15 @@
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
-const { JSDOM } = require("jsdom");
+const cheerio = require("cheerio");
 
 const app = express();
 app.use(cors());
 
-// 🔹 Allowed video sources
-const allowedHosts = ["vidsrc.xyz", "edgedeliverynetwork.com", "vidsrc.cc"];
+// Allowed video sources
+const allowedHosts = ["vidsrc.xyz", "edgedeliverynetwork.com", "vidsrc.cc", "embed.su"];
 
-// 🔹 Dynamic Proxy Middleware
+// Dynamic Proxy Middleware for Video Content
 app.use("/proxy", async (req, res) => {
     const videoUrl = req.query.url;
 
@@ -35,61 +35,81 @@ app.use("/proxy", async (req, res) => {
     }
 });
 
-// 🔹 Secure Fetch & Sanitize
+// Secure Fetch & Sanitize using Cheerio
 async function fetchAndSanitize(url) {
     const response = await axios.get(url, {
         headers: { "User-Agent": "Mozilla/5.0" },
     });
 
-    let content = response.data;
-    const dom = new JSDOM(content, { runScripts: "outside-only" });
-    const { document } = dom.window;
+    const $ = cheerio.load(response.data);
 
-    // 🔹 REMOVE Histats Tracking Scripts & Images
-    document.querySelectorAll("script, img").forEach((el) => {
-        if (el.src && el.src.includes("histats")) {
-            el.remove();
-        }
-        if (el.textContent && el.textContent.includes("histats")) {
-            el.remove();
-        }
-    });
+    // Remove Histats Scripts, Images, Links, and Divs
+    $("script, img, a, div, span").each((_, el) => {
+        const content = $(el).html();
+        const src = $(el).attr("src");
+        const href = $(el).attr("href");
 
-    // 🔹 Resize Video Frames
-    document.querySelectorAll("iframe").forEach((iframe) => {
-        let src = iframe.getAttribute("src");
-    
-        if (!src || src.includes("ads") || src.includes("redirect") || src.includes("tracker")) {
-            iframe.remove(); // 🚫 Remove Bad Iframes
-        } else if (!allowedHosts.some(host => src.includes(host))) {
-            iframe.remove(); // 🚫 Remove Non-Whitelisted Iframes
-        } else {
-            // ✅ Append autoplay parameter
-            const autoplaySrc = src.includes("?") ? `${src}&autoplay=1` : `${src}?autoplay=1`;
-            iframe.setAttribute("src", autoplaySrc);
-    
-            // ✅ Resize Allowed Iframes
-            iframe.setAttribute("width", "100%");
-            iframe.setAttribute("height", "300px");
-            iframe.setAttribute("padding", "0");
-            iframe.setAttribute("style", "border:none;");
-            iframe.setAttribute("allow", "autoplay; encrypted-media; fullscreen"); // Allow autoplay
-        }
-    });
-    
-    // 🔹 Remove JavaScript Redirects
-    document.querySelectorAll("script").forEach((script) => {
         if (
-            script.textContent.match(/window\.location|document\.location|location\.href|setTimeout|redirect|eval|atob/i)
+            (src && src.includes("histats")) ||
+            (href && href.includes("histats")) ||
+            (content && content.toLowerCase().includes("histats"))
         ) {
-            script.remove();
+            $(el).remove();
         }
     });
 
-    // 🔹 Remove META Redirects
-    document.querySelectorAll('meta[http-equiv="refresh"]').forEach((meta) => meta.remove());
+    // Remove Inline Scripts Containing Histats
+    $("script").each((_, el) => {
+        const scriptContent = $(el).html();
+        if (scriptContent && /histats/i.test(scriptContent)) {
+            $(el).remove();
+        }
+    });
 
-    return dom.serialize();
+    // Set Body Background to Black
+    $("body").attr("style", "background-color: black !important; color: white !important;");
+
+    // Resize & Filter Video Iframes
+    $("iframe").each((_, el) => {
+        const src = $(el).attr("src");
+
+        if (!src || src.includes("ads") || src.includes("redirect") || src.includes("tracker")) {
+            $(el).remove();
+        } else if (!allowedHosts.some((host) => src.includes(host))) {
+            $(el).remove();
+        } else {
+            // Append autoplay parameter
+            const autoplaySrc = src.includes("?") ? `${src}&autoplay=1` : `${src}?autoplay=1`;
+            $(el).attr("src", autoplaySrc);
+
+            // Resize Allowed Iframes
+            $(el).attr("width", "100%");
+            $(el).attr("height", "400px"); // Set height in pixels
+            $(el).attr("style", "border:none;");
+            $(el).attr("allow", "autoplay; encrypted-media; fullscreen; picture-in-picture");
+        }
+    });
+
+    // Remove JavaScript Redirects
+    $("script").each((_, el) => {
+        const scriptContent = $(el).html();
+        if (/window\.location|document\.location|location\.href|setTimeout|redirect|eval|atob/i.test(scriptContent)) {
+            $(el).remove();
+        }
+    });
+
+    // Remove META Redirects
+    $('meta[http-equiv="refresh"]').remove();
+
+    // Inject Required Static Files Directly from Embed.su
+    $("head").append(`
+        <link rel="stylesheet" type="text/css" href="https://embed.su/static/player.css?v1.0.61">
+        <script src="https://embed.su/static/player.js?v1.0.61" defer></script>
+        <script src="https://embed.su/static/react.js?v1.0.61" defer></script>
+        <script src="https://embed.su/static/hls.js?v1.0.61" defer></script>
+    `);
+
+    return $.html();
 }
 
 // Start server (Only for local testing)
