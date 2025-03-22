@@ -6,10 +6,16 @@ const cheerio = require("cheerio");
 const app = express();
 app.use(cors());
 
-// Allowed video sources
-const allowedHosts = ["vidsrc.xyz", "edgedeliverynetwork.com", "vidsrc.cc", "embed.su"];
+// 🔹 Allowed video sources
+const allowedHosts = ["vidsrc.xyz", "edgedeliverynetwork.com", "vidsrc.cc", "vidlink.pro", "player.smashy.stream"];
 
-// Dynamic Proxy Middleware for Video Content
+// example uses
+
+// vidlink.pro
+// https://vidlink.pro/movie/945961?primaryColor=11214b&secondaryColor=a2a2a2&iconColor=eefdec&icons=vid&player=default&title=true&autoplay=true&nextbutton=false
+
+// https://player.smashy.stream/movie/945961
+// 🔹 Dynamic Proxy Middleware
 app.use("/proxy", async (req, res) => {
     const videoUrl = req.query.url;
 
@@ -27,7 +33,20 @@ app.use("/proxy", async (req, res) => {
 
         let content = await fetchAndSanitize(videoUrl);
 
+        // Inject JS to bypass iframe restrictions
+        content = content.replace(
+            "</body>",
+            `<script>
+                Object.defineProperty(window, "self", { get: () => window.top });
+                console.log("🔓 Sandbox bypass injected.");
+            </script></body>`
+        );
+
+        // 🔹 Remove security headers that block embedding
         res.setHeader("Content-Type", "text/html");
+        res.removeHeader("X-Frame-Options");
+        res.removeHeader("Content-Security-Policy");
+
         res.send(content);
     } catch (error) {
         console.error("Proxy Error:", error.message);
@@ -35,7 +54,7 @@ app.use("/proxy", async (req, res) => {
     }
 });
 
-// Secure Fetch & Sanitize using Cheerio
+// 🔹 Secure Fetch & Sanitize using Cheerio
 async function fetchAndSanitize(url) {
     const response = await axios.get(url, {
         headers: { "User-Agent": "Mozilla/5.0" },
@@ -43,7 +62,7 @@ async function fetchAndSanitize(url) {
 
     const $ = cheerio.load(response.data);
 
-    // Remove Histats Scripts, Images, Links, and Divs
+    // 🔹 Remove Histats Scripts, Images, Links, and Divs
     $("script, img, a, div, span").each((_, el) => {
         const content = $(el).html();
         const src = $(el).attr("src");
@@ -58,7 +77,7 @@ async function fetchAndSanitize(url) {
         }
     });
 
-    // Remove Inline Scripts Containing Histats
+    // 🔹 Remove Inline Scripts Containing Histats
     $("script").each((_, el) => {
         const scriptContent = $(el).html();
         if (scriptContent && /histats/i.test(scriptContent)) {
@@ -66,10 +85,31 @@ async function fetchAndSanitize(url) {
         }
     });
 
-    // Set Body Background to Black
+   // 🔹 Modify the SmashyPlayer script to remove "sandbox" mentions
+   await Promise.all(
+    $("script").map(async (_, el) => {
+        const src = $(el).attr("src");
+        if (src && src.includes("https://smashyplayer.top/assets/index-BYnhesei.js")) {
+            console.log("🛠️ Modifying script:", src);
+            
+            try {
+                const scriptResponse = await axios.get(src);
+                let modifiedScript = scriptResponse.data.replace(/sandboxed?|Sandboxed?/g, ""); // Remove sandbox mentions
+
+                $(el).remove(); // Remove original script
+                $("body").append(`<script>${modifiedScript}</script>`); // Inject modified script
+
+            } catch (err) {
+                console.error("⚠️ Failed to fetch script for modification:", err.message);
+            }
+        }
+    })
+);
+
+// 🔹 Set Body Background to Black
     $("body").attr("style", "background-color: black !important; color: white !important;");
 
-    // Resize & Filter Video Iframes
+    // 🔹 Resize & Filter Video Iframes
     $("iframe").each((_, el) => {
         const src = $(el).attr("src");
 
@@ -78,11 +118,11 @@ async function fetchAndSanitize(url) {
         } else if (!allowedHosts.some((host) => src.includes(host))) {
             $(el).remove();
         } else {
-            // Append autoplay parameter
+            // ✅ Append autoplay parameter
             const autoplaySrc = src.includes("?") ? `${src}&autoplay=1` : `${src}?autoplay=1`;
             $(el).attr("src", autoplaySrc);
 
-            // Resize Allowed Iframes
+            // ✅ Resize Allowed Iframes
             $(el).attr("width", "100%");
             $(el).attr("height", "400px"); // Set height in pixels
             $(el).attr("style", "border:none;");
@@ -90,7 +130,7 @@ async function fetchAndSanitize(url) {
         }
     });
 
-    // Remove JavaScript Redirects
+    // 🔹 Remove JavaScript Redirects
     $("script").each((_, el) => {
         const scriptContent = $(el).html();
         if (/window\.location|document\.location|location\.href|setTimeout|redirect|eval|atob/i.test(scriptContent)) {
@@ -98,16 +138,8 @@ async function fetchAndSanitize(url) {
         }
     });
 
-    // Remove META Redirects
+    // 🔹 Remove META Redirects
     $('meta[http-equiv="refresh"]').remove();
-
-    // Inject Required Static Files Directly from Embed.su
-    $("head").append(`
-        <link rel="stylesheet" type="text/css" href="https://embed.su/static/player.css?v1.0.61">
-        <script src="https://embed.su/static/player.js?v1.0.61" defer></script>
-        <script src="https://embed.su/static/react.js?v1.0.61" defer></script>
-        <script src="https://embed.su/static/hls.js?v1.0.61" defer></script>
-    `);
 
     return $.html();
 }
